@@ -5,6 +5,69 @@ An Anchor program for staking [Metaplex Core](https://developers.metaplex.com/co
 - **Task 1 (Core plugins):** stake and unstake with `FreezeDelegate`, claim rewards without unstaking, burn a staked NFT through `BurnDelegate` for a bonus, and keep a `total_staked` counter in the Collection's `Attributes`.
 - **Task 2 (Oracle plugin):** an Oracle external plugin allows NFT transfers only from 09:00 to 17:00 UTC. A permissionless crank keeps it up to date and earns a reward. |
 
+## Architecture
+
+```mermaid
+flowchart TB
+    Admin([Admin])
+    User([User])
+    Cranker([Anyone / Cranker])
+
+    subgraph Program["q3-nft-staking program"]
+        Setup["<b>Setup</b><br/>initialize · create_collection<br/>mint_nft · create_oracle<br/>add_oracle_plugin"]
+        Staking["<b>Task 1: Staking</b><br/>stake · claim_rewards<br/>unstake · burn_staked_nft"]
+        Transfer["<b>Task 2</b><br/>transfer_nft"]
+        Crank["<b>Task 2</b><br/>crank_oracle"]
+    end
+
+    subgraph Core["Metaplex Core"]
+        Collection["<b>Collection</b><br/>Attributes: total_staked<br/>Oracle adapter: Transfer / REJECT"]
+        Asset["<b>Asset</b><br/>FreezeDelegate · BurnDelegate<br/>Attributes: staked_at"]
+    end
+
+    subgraph PDAs["Program PDAs"]
+        Mint[("Rewards Mint")]
+        Oracle[("TransferOracle")]
+        Vault[("Oracle Vault")]
+    end
+
+    Admin --> Setup
+    User --> Staking
+    User --> Transfer
+    Cranker --> Crank
+
+    Setup -- CPI --> Collection
+    Staking -- "CPI: freeze / thaw / burn" --> Asset
+    Staking -- "CPI: total_staked ±1" --> Collection
+    Staking -- mint_to --> Mint
+    Transfer -- "TransferV1 + oracle" --> Asset
+    Crank -- "Pass / Rejected" --> Oracle
+    Crank -- "reward" --> Vault
+    Collection -. "reads validation" .-> Oracle
+```
+
+### Asset lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Unstaked: mint_nft
+    Unstaked --> Staked: stake
+    Staked --> Unstaked: unstake
+    Staked --> Burned: burn_staked_nft
+    Burned --> [*]
+    Unstaked --> Unstaked: transfer_nft
+    Staked --> Staked: claim_rewards
+```
+
+| Transition        | Effect                                                                   |
+| ----------------- | ------------------------------------------------------------------------ |
+| `stake`           | Freeze the asset, add the Burn delegate, set `staked_at`, `total_staked +1` |
+| `claim_rewards`   | Mint rewards, reset `staked_at`; the asset stays frozen                  |
+| `unstake`         | Mint rewards, thaw the asset, remove the delegates, `total_staked -1`    |
+| `burn_staked_nft` | Mint rewards + `burn_bonus`, `total_staked -1`, burn the asset           |
+| `transfer_nft`    | Allowed only while the Oracle says `Pass` (09:00–17:00 UTC)              |
+
 ## Accounts
 
 | Account          | Seeds                  | Purpose                                                              |
